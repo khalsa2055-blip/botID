@@ -153,7 +153,7 @@ def search_public_telegram(query: str, kind: str = "all") -> list[tuple[str, str
                     return results
         except Exception as exc:
             failures.append(f"{provider}: {type(exc).__name__}")
-            logger.warning("%s public search failed (%s)", provider, type(exc).__name__)
+            logger.warning("%s public search failed: %s: %s", provider, type(exc).__name__, str(exc)[:240])
 
     if not results and failures:
         raise RuntimeError("; ".join(failures))
@@ -220,7 +220,7 @@ async def run_search(
             timeout=25,
         )
     except Exception as exc:
-        logger.warning("Public search failed: %s", exc)
+        logger.warning("Public search failed: %s: %s", type(exc).__name__, str(exc)[:300])
         # Keep the user-facing message useful while recording provider-level failures in logs.
         await msg.edit_text(
             "تعذّر الاتصال بمصادر البحث حاليًا. جرّب بعد قليل.\n"

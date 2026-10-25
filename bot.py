@@ -44,7 +44,7 @@ def is_telegram_public_url(url: str) -> bool:
 
 def search_public_telegram(query: str, kind: str = "all") -> list[tuple[str, str]]:
     """Search several web indexes for public Telegram pages; never claims complete coverage."""
-    cleaned = re.sub(r"\\s+", " ", query).strip()[:120]
+    cleaned = re.sub(r"\s+", " ", query).strip()[:120]
     if not cleaned:
         return []
 
@@ -64,7 +64,7 @@ def search_public_telegram(query: str, kind: str = "all") -> list[tuple[str, str
         ("DuckDuckGo Lite", "https://lite.duckduckgo.com/lite/", {"q": search_query},
          ("a.result-link", "a.result__a")),
         ("Bing", "https://www.bing.com/search", {"q": search_query},
-         ("li.b_algo h2 a", "a")),
+         ("li.b_algo h2 a",)),
     ]
 
     results: list[tuple[str, str]] = []

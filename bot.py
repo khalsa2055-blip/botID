@@ -211,7 +211,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     value = (update.effective_message.text or "").strip()
     if not value:
         return
-    # Treat a plain text message as a public-group/channel search query.
+    # A bare numeric ID or @username should work without a command.
+    if re.fullmatch(r"-?\d{5,20}|@?[A-Za-z][A-Za-z0-9_]{4,31}", value):
+        await run_search(update, context, "all", query_override=f'"{value}"')
+        return
+    # Otherwise, treat plain text as a public group/channel search query.
     await run_search(update, context, "all", query_override=value)
 
 

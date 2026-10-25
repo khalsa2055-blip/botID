@@ -43,8 +43,8 @@ def is_telegram_public_url(url: str) -> bool:
 
 
 def search_public_telegram(query: str, kind: str = "all") -> list[tuple[str, str]]:
-    """Search web-indexed public Telegram pages. This is not a complete Telegram index."""
-    cleaned = re.sub(r"\s+", " ", query).strip()[:120]
+    """Search several web indexes for public Telegram pages; never claims complete coverage."""
+    cleaned = re.sub(r"\\s+", " ", query).strip()[:120]
     if not cleaned:
         return []
 
@@ -53,40 +53,70 @@ def search_public_telegram(query: str, kind: str = "all") -> list[tuple[str, str
         "channel": " (channel OR news)",
         "all": "",
     }.get(kind, "")
-    params = {"q": f"site:t.me {cleaned}{suffix}"}
+    search_query = f"site:t.me {cleaned}{suffix}"
     headers = {
-        "User-Agent": "Mozilla/5.0 (compatible; botID-public-search/1.0)",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36",
         "Accept-Language": "en-US,en;q=0.8",
     }
-    response = requests.get(SEARCH_URL, params=params, headers=headers, timeout=TIMEOUT_SECONDS)
-    response.raise_for_status()
-    soup = BeautifulSoup(response.text, "html.parser")
+    providers = [
+        ("DuckDuckGo", "https://html.duckduckgo.com/html/", {"q": search_query},
+         ("a.result__a", "a.result-link")),
+        ("DuckDuckGo Lite", "https://lite.duckduckgo.com/lite/", {"q": search_query},
+         ("a.result-link", "a.result__a")),
+        ("Bing", "https://www.bing.com/search", {"q": search_query},
+         ("li.b_algo h2 a", "a")),
+    ]
 
     results: list[tuple[str, str]] = []
     seen: set[str] = set()
-    for anchor in soup.select("a.result__a"):
-        title = anchor.get_text(" ", strip=True)
-        url = anchor.get("href", "").strip()
-        if not url:
-            continue
-        # DuckDuckGo may wrap result URLs in a redirect URL.
-        if "uddg=" in url:
-            from urllib.parse import parse_qs
-            parsed = urlparse(url)
-            url = unquote(parse_qs(parsed.query).get("uddg", [url])[0])
-        if not is_telegram_public_url(url):
-            continue
-        path = urlparse(url).path.strip("/")
-        if not path or path.startswith(("s/", "iv/")):
-            continue
-        if url in seen:
-            continue
-        seen.add(url)
-        results.append((title[:180] or path, url))
-        if len(results) >= MAX_RESULTS:
-            break
-    return results
+    failures: list[str] = []
 
+    for provider, endpoint, params, selectors in providers:
+        try:
+            response = requests.get(
+                endpoint, params=params, headers=headers, timeout=TIMEOUT_SECONDS
+            )
+            response.raise_for_status()
+            soup = BeautifulSoup(response.text, "html.parser")
+            anchors = []
+            for selector in selectors:
+                anchors = soup.select(selector)
+                if anchors:
+                    break
+
+            for anchor in anchors:
+                title = anchor.get_text(" ", strip=True)
+                url = (anchor.get("href") or "").strip()
+                if not url:
+                    continue
+
+                parsed = urlparse(url)
+                if "uddg" in parsed.query:
+                    from urllib.parse import parse_qs
+                    url = unquote(parse_qs(parsed.query).get("uddg", [url])[0])
+                elif "url" in parsed.query and ("bing.com/ck" in url or "bing.com/ck/a" in url):
+                    from urllib.parse import parse_qs
+                    url = unquote(parse_qs(parsed.query).get("url", [url])[0])
+
+                if not is_telegram_public_url(url):
+                    continue
+                path = urlparse(url).path.strip("/")
+                if not path or path.startswith(("s/", "iv/")):
+                    continue
+                canonical = url.split("?")[0].rstrip("/")
+                if canonical in seen:
+                    continue
+                seen.add(canonical)
+                results.append((title[:180] or path, canonical))
+                if len(results) >= MAX_RESULTS:
+                    return results
+        except Exception as exc:
+            failures.append(f"{provider}: {type(exc).__name__}")
+            logger.warning("%s public search failed (%s)", provider, type(exc).__name__)
+
+    if not results and failures:
+        raise RuntimeError("; ".join(failures))
+    return results
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = (

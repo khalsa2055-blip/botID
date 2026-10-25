@@ -88,14 +88,15 @@ def search_public_telegram(query: str, kind: str = "all") -> list[tuple[str, str
         "Accept-Language": "en-US,en;q=0.8",
     }
     providers = [
-        ("Bing RSS", "https://www.bing.com/search", {"q": search_query, "format": "rss"},
-         ()),
         ("DuckDuckGo", "https://html.duckduckgo.com/html/", {"q": search_query},
          ("a.result__a", "a.result-link")),
         ("DuckDuckGo Lite", "https://lite.duckduckgo.com/lite/", {"q": search_query},
          ("a.result-link", "a.result__a")),
         ("Bing", "https://www.bing.com/search", {"q": search_query},
          ("li.b_algo h2 a",)),
+        # RSS is a separate fallback in case Bing's HTML page changes or blocks scraping.
+        ("Bing RSS", "https://www.bing.com/search", {"q": search_query, "format": "rss"},
+         ()),
     ]
 
     results: list[tuple[str, str]] = []

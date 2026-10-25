@@ -1,7 +1,8 @@
+import base64
 import logging
 import os
 import re
-from urllib.parse import urlparse, unquote
+from urllib.parse import urlparse, unquote, parse_qs
 
 import requests
 from bs4 import BeautifulSoup
@@ -16,7 +17,6 @@ from telegram.ext import (
 )
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
-SEARCH_URL = "https://html.duckduckgo.com/html/"
 TIMEOUT_SECONDS = 12
 MAX_RESULTS = 8
 
@@ -40,6 +40,35 @@ def is_telegram_public_url(url: str) -> bool:
         return host in {"t.me", "www.t.me", "telegram.me", "www.telegram.me"}
     except ValueError:
         return False
+
+
+
+def is_valid_identifier(value: str) -> bool:
+    """Return whether a value looks like a Telegram username or numeric ID."""
+    return re.fullmatch(r"@?[A-Za-z][A-Za-z0-9_]{4,31}|-?\d{5,20}", value) is not None
+
+
+def unwrap_search_result_url(url: str, provider: str) -> str:
+    """Convert supported search-engine redirect links into their destination URL."""
+    parsed = urlparse(url)
+    params = parse_qs(parsed.query)
+
+    if "uddg" in params:
+        return unquote(params["uddg"][0])
+    if provider == "Bing":
+        if params.get("url"):
+            return unquote(params["url"][0])
+        encoded = params.get("u", [""])[0]
+        if encoded.startswith("a1"):
+            payload = encoded[2:]
+            try:
+                padded = payload + "=" * ((4 - len(payload) % 4) % 4)
+                decoded = base64.urlsafe_b64decode(padded).decode("utf-8", errors="ignore")
+                if decoded.startswith(("http://", "https://")):
+                    return decoded
+            except (ValueError, UnicodeError):
+                pass
+    return url
 
 
 def search_public_telegram(query: str, kind: str = "all") -> list[tuple[str, str]]:
@@ -90,13 +119,7 @@ def search_public_telegram(query: str, kind: str = "all") -> list[tuple[str, str
                 if not url:
                     continue
 
-                parsed = urlparse(url)
-                if "uddg" in parsed.query:
-                    from urllib.parse import parse_qs
-                    url = unquote(parse_qs(parsed.query).get("uddg", [url])[0])
-                elif "url" in parsed.query and ("bing.com/ck" in url or "bing.com/ck/a" in url):
-                    from urllib.parse import parse_qs
-                    url = unquote(parse_qs(parsed.query).get("url", [url])[0])
+                url = unwrap_search_result_url(url, provider)
 
                 if not is_telegram_public_url(url):
                     continue
@@ -141,7 +164,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/group كلمة — البحث عن مجموعات عامة\n"
         "/channel كلمة — البحث عن قنوات عامة\n"
         "/resolve @username أو ID — البحث عن معلومات عامة مفهرسة\n"
-        "/where ID — غير متاح حاليًا؛ يحتاج قاعدة بيانات عضويات عامة مستقلة\n"
+        "/where ID — البحث عن ظهور عام للاسم أو المعرّف، وليس كشف العضويات\n"
         "/about — معلومات عن حدود البحث"
     )
 
@@ -214,7 +237,7 @@ async def resolve_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if not value:
         await update.effective_message.reply_text("مثال: /resolve @username أو /resolve 123456789")
         return
-    if not re.fullmatch(r"@?[A-Za-z][A-Za-z0-9_]{4,31}|-?\d{5,20}", value):
+    if not is_valid_identifier(value):
         await update.effective_message.reply_text("أرسل username أو ID رقميًا بشكل صحيح.")
         return
     await run_search(update, context, "all", query_override=value)
@@ -222,7 +245,7 @@ async def resolve_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 async def where_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     value = " ".join(context.args).strip()
-    if not value or not re.fullmatch(r"@?[A-Za-z][A-Za-z0-9_]{4,31}|-?\\d{5,20}", value):
+    if not value or not is_valid_identifier(value):
         await update.effective_message.reply_text(
             "استخدم الأمر هكذا: /where ID أو /where @username"
         )
@@ -242,7 +265,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if not value:
         return
     # A bare numeric ID or @username should work without a command.
-    if re.fullmatch(r"-?\d{5,20}|@?[A-Za-z][A-Za-z0-9_]{4,31}", value):
+    if is_valid_identifier(value):
         await run_search(update, context, "all", query_override=f'"{value}"')
         return
     # Otherwise, treat plain text as a public group/channel search query.

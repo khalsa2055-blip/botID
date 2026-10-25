@@ -11,6 +11,7 @@ from telegram.ext import (
     CommandHandler,
     MessageHandler,
     ContextTypes,
+    CallbackQueryHandler,
     filters,
 )
 
@@ -205,6 +206,19 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await run_search(update, context, "all", query_override=value)
 
 
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    if query.data == "help_search":
+        await query.message.reply_text(
+            "أرسل /search كلمة للبحث العام، أو /group كلمة للمجموعات، أو /channel كلمة للقنوات."
+        )
+    elif query.data == "help_commands":
+        await query.message.reply_text(
+            "/search كلمة — البحث العام\n/group كلمة — مجموعات عامة\n/channel كلمة — قنوات عامة\n/resolve @username — بحث عن معرّف\n/where ID — غير متاح حاليًا"
+        )
+
+
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.error("Unhandled bot exception", exc_info=context.error)
 
@@ -221,6 +235,7 @@ def main() -> None:
     app.add_handler(CommandHandler("channel", channel_command))
     app.add_handler(CommandHandler("resolve", resolve_command))
     app.add_handler(CommandHandler("where", where_command))
+    app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_error_handler(error_handler)
     logger.info("botID public search bot is starting")

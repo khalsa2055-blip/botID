@@ -17,7 +17,7 @@ from telegram.ext import (
 )
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
-TIMEOUT_SECONDS = 12
+TIMEOUT_SECONDS = 6
 MAX_RESULTS = 8
 
 logging.basicConfig(
@@ -212,8 +212,12 @@ async def run_search(
 
     msg = await update.effective_message.reply_text("🔎 أبحث في صفحات Telegram العامة...")
     try:
-        results = await context.application.create_task(
-            __import__("asyncio").to_thread(search_public_telegram, query, kind)
+        import asyncio
+        # Bound the whole search so a slow search engine cannot leave the Telegram
+        # progress message hanging indefinitely.
+        results = await asyncio.wait_for(
+            asyncio.to_thread(search_public_telegram, query, kind),
+            timeout=25,
         )
     except Exception as exc:
         logger.warning("Public search failed: %s", exc)

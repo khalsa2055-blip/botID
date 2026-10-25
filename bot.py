@@ -88,6 +88,8 @@ def search_public_telegram(query: str, kind: str = "all") -> list[tuple[str, str
         "Accept-Language": "en-US,en;q=0.8",
     }
     providers = [
+        ("Bing RSS", "https://www.bing.com/search", {"q": search_query, "format": "rss"},
+         ()),
         ("DuckDuckGo", "https://html.duckduckgo.com/html/", {"q": search_query},
          ("a.result__a", "a.result-link")),
         ("DuckDuckGo Lite", "https://lite.duckduckgo.com/lite/", {"q": search_query},
@@ -106,16 +108,27 @@ def search_public_telegram(query: str, kind: str = "all") -> list[tuple[str, str
                 endpoint, params=params, headers=headers, timeout=TIMEOUT_SECONDS
             )
             response.raise_for_status()
-            soup = BeautifulSoup(response.text, "html.parser")
-            anchors = []
-            for selector in selectors:
-                anchors = soup.select(selector)
-                if anchors:
-                    break
+            if provider == "Bing RSS":
+                soup = BeautifulSoup(response.text, "xml")
+                entries = [
+                    (item.title.get_text(" ", strip=True) if item.title else "",
+                     item.link.get_text(strip=True) if item.link else "")
+                    for item in soup.find_all("item")
+                ]
+            else:
+                soup = BeautifulSoup(response.text, "html.parser")
+                anchors = []
+                for selector in selectors:
+                    anchors = soup.select(selector)
+                    if anchors:
+                        break
+                entries = [
+                    (anchor.get_text(" ", strip=True), (anchor.get("href") or "").strip())
+                    for anchor in anchors
+                ]
 
-            for anchor in anchors:
-                title = anchor.get_text(" ", strip=True)
-                url = (anchor.get("href") or "").strip()
+            for title, url in entries:
+                url = url.strip()
                 if not url:
                     continue
 
@@ -199,8 +212,10 @@ async def run_search(
         )
     except Exception as exc:
         logger.warning("Public search failed: %s", exc)
+        # Keep the user-facing message useful while recording provider-level failures in logs.
         await msg.edit_text(
-            "تعذّر البحث الآن؛ قد يكون محرك البحث غير متاح أو يحدّ الطلبات. حاول لاحقًا."
+            "تعذّر الاتصال بمصادر البحث حاليًا. جرّب بعد قليل.\n"
+            "إذا استمرت المشكلة، افتح سجلّ الخدمة (Logs) لمعرفة أي مصدر يرفض الطلبات."
         )
         return
 

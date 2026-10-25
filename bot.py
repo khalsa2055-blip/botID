@@ -104,6 +104,10 @@ def search_public_telegram(query: str, kind: str = "all") -> list[tuple[str, str
     failures: list[str] = []
 
     for provider, endpoint, params, selectors in providers:
+        # Keep RSS as a true fallback: avoid an extra request when HTML search already
+        # returned results, or when all providers returned cleanly with no results.
+        if provider == "Bing RSS" and (results or not failures):
+            break
         try:
             response = requests.get(
                 endpoint, params=params, headers=headers, timeout=TIMEOUT_SECONDS

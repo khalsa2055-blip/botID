@@ -1,7 +1,8 @@
+import base64
 import logging
 import os
 import re
-from urllib.parse import urlparse, unquote
+from urllib.parse import urlparse, unquote, parse_qs
 
 import requests
 from bs4 import BeautifulSoup
@@ -16,7 +17,6 @@ from telegram.ext import (
 )
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
-SEARCH_URL = "https://html.duckduckgo.com/html/"
 TIMEOUT_SECONDS = 12
 MAX_RESULTS = 8
 
@@ -42,8 +42,37 @@ def is_telegram_public_url(url: str) -> bool:
         return False
 
 
+
+def is_valid_identifier(value: str) -> bool:
+    """Return whether a value looks like a Telegram username or numeric ID."""
+    return re.fullmatch(r"@?[A-Za-z][A-Za-z0-9_]{4,31}|-?\d{5,20}", value) is not None
+
+
+def unwrap_search_result_url(url: str, provider: str) -> str:
+    """Convert supported search-engine redirect links into their destination URL."""
+    parsed = urlparse(url)
+    params = parse_qs(parsed.query)
+
+    if "uddg" in params:
+        return unquote(params["uddg"][0])
+    if provider == "Bing":
+        if params.get("url"):
+            return unquote(params["url"][0])
+        encoded = params.get("u", [""])[0]
+        if encoded.startswith("a1"):
+            payload = encoded[2:]
+            try:
+                padded = payload + "=" * ((4 - len(payload) % 4) % 4)
+                decoded = base64.urlsafe_b64decode(padded).decode("utf-8", errors="ignore")
+                if decoded.startswith(("http://", "https://")):
+                    return decoded
+            except (ValueError, UnicodeError):
+                pass
+    return url
+
+
 def search_public_telegram(query: str, kind: str = "all") -> list[tuple[str, str]]:
-    """Search web-indexed public Telegram pages. This is not a complete Telegram index."""
+    """Search several web indexes for public Telegram pages; never claims complete coverage."""
     cleaned = re.sub(r"\s+", " ", query).strip()[:120]
     if not cleaned:
         return []
@@ -53,40 +82,64 @@ def search_public_telegram(query: str, kind: str = "all") -> list[tuple[str, str
         "channel": " (channel OR news)",
         "all": "",
     }.get(kind, "")
-    params = {"q": f"site:t.me {cleaned}{suffix}"}
+    search_query = f"site:t.me {cleaned}{suffix}"
     headers = {
-        "User-Agent": "Mozilla/5.0 (compatible; botID-public-search/1.0)",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36",
         "Accept-Language": "en-US,en;q=0.8",
     }
-    response = requests.get(SEARCH_URL, params=params, headers=headers, timeout=TIMEOUT_SECONDS)
-    response.raise_for_status()
-    soup = BeautifulSoup(response.text, "html.parser")
+    providers = [
+        ("DuckDuckGo", "https://html.duckduckgo.com/html/", {"q": search_query},
+         ("a.result__a", "a.result-link")),
+        ("DuckDuckGo Lite", "https://lite.duckduckgo.com/lite/", {"q": search_query},
+         ("a.result-link", "a.result__a")),
+        ("Bing", "https://www.bing.com/search", {"q": search_query},
+         ("li.b_algo h2 a",)),
+    ]
 
     results: list[tuple[str, str]] = []
     seen: set[str] = set()
-    for anchor in soup.select("a.result__a"):
-        title = anchor.get_text(" ", strip=True)
-        url = anchor.get("href", "").strip()
-        if not url:
-            continue
-        # DuckDuckGo may wrap result URLs in a redirect URL.
-        if "uddg=" in url:
-            from urllib.parse import parse_qs
-            parsed = urlparse(url)
-            url = unquote(parse_qs(parsed.query).get("uddg", [url])[0])
-        if not is_telegram_public_url(url):
-            continue
-        path = urlparse(url).path.strip("/")
-        if not path or path.startswith(("s/", "iv/")):
-            continue
-        if url in seen:
-            continue
-        seen.add(url)
-        results.append((title[:180] or path, url))
-        if len(results) >= MAX_RESULTS:
-            break
-    return results
+    failures: list[str] = []
 
+    for provider, endpoint, params, selectors in providers:
+        try:
+            response = requests.get(
+                endpoint, params=params, headers=headers, timeout=TIMEOUT_SECONDS
+            )
+            response.raise_for_status()
+            soup = BeautifulSoup(response.text, "html.parser")
+            anchors = []
+            for selector in selectors:
+                anchors = soup.select(selector)
+                if anchors:
+                    break
+
+            for anchor in anchors:
+                title = anchor.get_text(" ", strip=True)
+                url = (anchor.get("href") or "").strip()
+                if not url:
+                    continue
+
+                url = unwrap_search_result_url(url, provider)
+
+                if not is_telegram_public_url(url):
+                    continue
+                path = urlparse(url).path.strip("/")
+                if not path or path.startswith(("s/", "iv/")):
+                    continue
+                canonical = url.split("?")[0].rstrip("/")
+                if canonical in seen:
+                    continue
+                seen.add(canonical)
+                results.append((title[:180] or path, canonical))
+                if len(results) >= MAX_RESULTS:
+                    return results
+        except Exception as exc:
+            failures.append(f"{provider}: {type(exc).__name__}")
+            logger.warning("%s public search failed (%s)", provider, type(exc).__name__)
+
+    if not results and failures:
+        raise RuntimeError("; ".join(failures))
+    return results
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = (
@@ -111,7 +164,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/group كلمة — البحث عن مجموعات عامة\n"
         "/channel كلمة — البحث عن قنوات عامة\n"
         "/resolve @username أو ID — البحث عن معلومات عامة مفهرسة\n"
-        "/where ID — غير متاح حاليًا؛ يحتاج قاعدة بيانات عضويات عامة مستقلة\n"
+        "/where ID — البحث عن ظهور عام للاسم أو المعرّف، وليس كشف العضويات\n"
         "/about — معلومات عن حدود البحث"
     )
 
@@ -184,7 +237,7 @@ async def resolve_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if not value:
         await update.effective_message.reply_text("مثال: /resolve @username أو /resolve 123456789")
         return
-    if not re.fullmatch(r"@?[A-Za-z][A-Za-z0-9_]{4,31}|-?\d{5,20}", value):
+    if not is_valid_identifier(value):
         await update.effective_message.reply_text("أرسل username أو ID رقميًا بشكل صحيح.")
         return
     await run_search(update, context, "all", query_override=value)
@@ -192,7 +245,7 @@ async def resolve_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 async def where_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     value = " ".join(context.args).strip()
-    if not value or not re.fullmatch(r"@?[A-Za-z][A-Za-z0-9_]{4,31}|-?\\d{5,20}", value):
+    if not value or not is_valid_identifier(value):
         await update.effective_message.reply_text(
             "استخدم الأمر هكذا: /where ID أو /where @username"
         )
@@ -212,7 +265,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if not value:
         return
     # A bare numeric ID or @username should work without a command.
-    if re.fullmatch(r"-?\d{5,20}|@?[A-Za-z][A-Za-z0-9_]{4,31}", value):
+    if is_valid_identifier(value):
         await run_search(update, context, "all", query_override=f'"{value}"')
         return
     # Otherwise, treat plain text as a public group/channel search query.

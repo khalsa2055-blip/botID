@@ -191,10 +191,19 @@ async def resolve_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 async def where_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.effective_message.reply_text(
-        "ميزة /where غير متوفرة بعد. تحتاج قاعدة بيانات مستقلة تجمع بيانات المجموعات العامة "
-        "وتربطها بمعرّفات المستخدمين، ولا يمكن استخراجها من Telegram Bot API وحده. "
-        "لن أعرض نتائج مخمّنة أو أدّعي كشف عضويات غير متاحة."
+    value = " ".join(context.args).strip()
+    if not value or not re.fullmatch(r"@?[A-Za-z][A-Za-z0-9_]{4,31}|-?\\d{5,20}", value):
+        await update.effective_message.reply_text(
+            "استخدم الأمر هكذا: /where ID أو /where @username"
+        )
+        return
+    # This searches only publicly indexed pages mentioning the identifier.
+    # It cannot verify that a person is/was a member of the resulting groups.
+    await run_search(
+        update,
+        context,
+        "all",
+        query_override=f'"{value}"'
     )
 
 
